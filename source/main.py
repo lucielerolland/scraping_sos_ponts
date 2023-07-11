@@ -1,6 +1,8 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import re, time, json, os
 import pandas as pd
 from datetime import date
@@ -15,7 +17,12 @@ def authentication(driver, url_authentication):
     with open("/home/lucie/.config/sos-ponts/config.json", 'r') as f:   # TODO ~
         credentials = json.loads(f.read())
 
-    driver.find_element(By.ID, "id_login").send_keys(credentials['username'])
+    id_login = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located(
+            (By.ID, "id_login")
+        ))
+
+    id_login.send_keys(credentials['username'])
     driver.find_element(By.ID, "id_password").send_keys(credentials['password'])
 
     driver.find_element(By.ID, "id_remember").click()
@@ -27,7 +34,12 @@ def authentication(driver, url_authentication):
 def lit_les_ressource(driver, url_ressources):
     driver.get(url_ressources)
 
-    nombre_ressources = re.findall('[0-9]+', driver.find_element(By.XPATH, "//h1/span").text)[0]
+    compteur_ressources = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located(
+            (By.XPATH, "//h1/span")
+        ))
+
+    nombre_ressources = re.findall('[0-9]+', compteur_ressources.text)[0]
 
     assert int(nombre_ressources) == len(driver.find_elements(By.CLASS_NAME, "col-xxl-3"))   # On  s'assure que toutes les col-xxl-3 sont des ressources
 
@@ -35,13 +47,18 @@ def lit_les_ressource(driver, url_ressources):
 
     for ix in range(len(driver.find_elements(By.CLASS_NAME, "col-xxl-3"))):
         time.sleep(1)
-        element = driver.find_elements(By.CLASS_NAME, "col-xxl-3")[ix]
+        element = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located(
+                (By.CLASS_NAME, "col-xxl-3")
+            ))[ix]
+        # element = driver.find_elements(By.CLASS_NAME, "col-xxl-3")[ix]
         element_name = element.find_element(By.TAG_NAME, 'a').text
         element_url = element.find_element(By.TAG_NAME, 'a').get_attribute('href')
         driver.get(element_url)
         element_modifie = driver.find_element(By.XPATH, "//div[@id='resource-details']/div/span/em").text
         # print(driver.find_element(By.XPATH, '//div[@id = "resource-main"]/div[@class = "text-justified font-marianne"]').text)
         sous_page = driver.find_element(By.XPATH, '//div[@id = "resource-main"]/div[@class = "text-justified font-marianne"]').get_attribute('innerHTML')
+        taches_liees = [tache.get_attribute('href') for tache in driver.find_elements(By.XPATH, "//ul[@class='mt-3 text-grey-light']/li/a")]
 
         assert element_name not in ressources.keys()  # Pas de doublons dans les noms
 
@@ -49,6 +66,7 @@ def lit_les_ressource(driver, url_ressources):
             "date_modification": element_modifie,
             "contenu": sous_page,
             "url": element_url,
+            "taches_liees": taches_liees
             }
 
         driver.get(url_ressources)
@@ -76,7 +94,8 @@ def lit_une_tache(driver, url_tache, lire_recommandations):
     time.sleep(1)
 
     xpath_contexte = "//h6[contains(text(), 'Contexte')]/ancestor::div/following-sibling::div/article"
-    contexte = driver.find_element(By.XPATH, xpath_contexte).text
+    contexte = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.XPATH, xpath_contexte))).text
 
     xpath_complements = "//h6[contains(text(), 'Compléments')]/ancestor::div/following-sibling::div/article"
     complements = driver.find_element(By.XPATH, xpath_complements).text
@@ -84,7 +103,11 @@ def lit_une_tache(driver, url_tache, lire_recommandations):
     tache = {'id': url_tache, 'contexte': contexte, 'complements': complements}
 
     if lire_recommandations:
-        driver.find_element(By.ID, "overview-step-2").click()
+        onglet_recommandations = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.ID, "overview-step-2")))
+
+        onglet_recommandations.click()
         time.sleep(1)
         recommandations = [recommandation.text for recommandation in driver.find_elements(By.XPATH, "//h6")]
         tache['recommandations'] = recommandations
@@ -103,14 +126,14 @@ def lit_les_taches(driver, url_taches):
     # La liste des url des tâches par état est disponible dans un csv dans le site.
     # L'acquérir semble plus robuste que scraper les tâches une à une à cause du slider
 
-    taches = defaultdict(list)
+    taches = defaultdict(dict)
 
     liste_des_taches = lit_la_liste_des_taches(driver)
 
     for ix, tache in liste_des_taches.iterrows():
         tache_extraite = lit_une_tache(driver, tache['lien_projet'], tache['statut_conseil'] == "DONE")
         tache_extraite['departement'] = tache['departement']
-        taches[tache['statut_conseil']].append(tache_extraite)
+        taches[tache['statut_conseil']][tache_extraite['id']] = tache_extraite
 
     return taches
 
@@ -120,20 +143,28 @@ def lit_les_taches(driver, url_taches):
 def consolider_recommandations(ressources, taches):
 
     taches_ressources_url = taches.copy()
-    taches_ressources_url['DONE'] = list()  # On réécrit les tâches effectuées pour inclure les url des ressources
+    taches_ressources_url['DONE'] = dict()  # On réécrit les tâches effectuées pour inclure les url des ressources
 
-    for entry in taches['DONE']:
-        entry['ressources_url'] = list()
+    # Méthode 1 : ressources présentes dans l'onglet "recommandations" de chaque tâche
+
+    for entry_url, entry in taches['DONE'].items():
+        entry['ressources_url_match_nom'] = list()
+        entry['ressources_url_match_url'] = list()
+
         for ressource in entry["recommandations"]:
             if ressource in ressources.keys():
-                entry['ressources_url'].append(ressources[ressource]['url'])
+                entry['ressources_url_match_nom'].append(ressources[ressource]['url'])
 
-        taches_ressources_url['DONE'].append(entry)
+        for ressource_url, ressource in ressources.items():
+            if entry_url in ressource['taches_liees']:
+                entry['ressources_url_match_url'].append(ressource['url'])
 
-    with open('ressources.json', 'w') as f:
+        taches_ressources_url['DONE'][entry_url] = entry
+
+    with open('../ressources.json', 'w') as f:
         f.write(json.dumps(ressources))
 
-    with open('taches.json', 'w') as f:
+    with open('../taches.json', 'w') as f:
         f.write(json.dumps(taches_ressources_url))
 
     return taches_ressources_url
@@ -150,7 +181,7 @@ if __name__ == '__main__':
     webdriver_service = Service('~/Documents/SOS Ponts/scraping_sos_ponts/geckodriver')
 
     options = webdriver.FirefoxOptions()
-    options.headless = True
+    # options.headless = True
     options.set_preference("browser.download.folderList", 2)
     options.set_preference("browser.download.manager.showWhenStarting", False)
     options.set_preference("browser.download.dir", os.getcwd())
@@ -160,7 +191,14 @@ if __name__ == '__main__':
 
     sos_ponts = driver.get(url_base)
 
-    driver.find_element(By.XPATH, "//button[@title='Refuser tous les cookies']").click()  # On commence par refuser les cookies
+    no_cookies = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located(
+            (By.XPATH, "//button[@title='Refuser tous les cookies']")
+            )
+        )
+
+    no_cookies.click()
+
     authentication(driver, url_authentication)
     ressources = lit_les_ressource(driver, url_ressources)
     taches = lit_les_taches(driver, url_taches)
