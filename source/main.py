@@ -11,19 +11,17 @@ from collections import defaultdict
 # Une fonction pour s'authentifier : comment gérer les secrets ?
 
 
-def authentication(driver, url_authentication):
+def authentication(driver, url_authentication, config):
 
     driver.get(url_authentication)
-    with open("/home/lucie/.config/sos-ponts/config.json", 'r') as f:   # TODO ~
-        credentials = json.loads(f.read())
 
     id_login = WebDriverWait(driver, 10).until(
         EC.presence_of_element_located(
             (By.ID, "id_login")
         ))
 
-    id_login.send_keys(credentials['username'])
-    driver.find_element(By.ID, "id_password").send_keys(credentials['password'])
+    id_login.send_keys(config['username'])
+    driver.find_element(By.ID, "id_password").send_keys(config['password'])
 
     driver.find_element(By.ID, "id_remember").click()
     driver.find_element(By.CLASS_NAME, "custom-login-button").click()
@@ -178,7 +176,12 @@ if __name__ == '__main__':
     url_ressources = f'{url_base}/ressource/'
     url_taches = f'{url_base}/projects/staff/'
 
-    webdriver_service = Service('~/Documents/SOS Ponts/scraping_sos_ponts/geckodriver')
+    config_path = os.path.expanduser(os.path.join('~', '.config', 'sos-ponts', 'config.json'))
+
+    with open(config_path, 'r') as f:
+        config = json.loads(f.read())
+
+    webdriver_service = Service(config['driver_path'])
 
     options = webdriver.FirefoxOptions()
     # options.headless = True
@@ -199,7 +202,7 @@ if __name__ == '__main__':
 
     no_cookies.click()
 
-    authentication(driver, url_authentication)
+    authentication(driver, url_authentication, config)
     ressources = lit_les_ressource(driver, url_ressources)
     taches = lit_les_taches(driver, url_taches)
     ressources_taches = consolider_recommandations(ressources, taches)
